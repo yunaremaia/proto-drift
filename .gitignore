@@ -1,0 +1,16 @@
+# proto-drift
+
+A CLI tool to detect drift between protobuf/gRPC definitions and generated SDK stubs.
+
+## Usage
+
+```bash
+proto-drift scan [--json] [--fail-on-drift]
+proto-drift check --proto <path> --sdk <path>
+proto-drift init   # creates .proto-drift.toml
+```
+
+## Exit Codes
+
+- `0`: No drift detected
+- `1`: Drift detected (or error)
