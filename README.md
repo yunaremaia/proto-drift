@@ -1,25 +1,32 @@
 # proto-drift
 
-> Detect drift between protobuf/gRPC definitions and generated SDK stubs across Go, TypeScript, Python, and Rust.
+> Detect drift between protobuf/gRPC definitions and the generated stubs you committed.
 
 ## The Problem
 
-You change a `.proto` file. You regenerate stubs in Go. But the TypeScript and Python SDKs still have the old generated code. Nobody notices until a consumer breaks at runtime.
+You change a `.proto` file. You regenerate the Go stubs. The TypeScript and Python SDKs
+still hold the old generated code. Nobody notices until a consumer breaks at runtime.
 
-This is **proto drift** — the silent gap between your API contract and the code you ship.
+This is **proto drift** — the gap between your API contract and the code you ship.
 
-Existing tools (`buf`, `protoc-gen-*`) focus on *generation*. They tell you when protos change, but not whether your committed stubs are actually up to date across all languages.
+`buf` and the `protoc-gen-*` plugins are *generators*: they tell you what a stub should be.
+Nothing in that pipeline tells you whether the stubs already committed to your repo are still
+in sync across languages.
 
 ## The Solution
 
-`proto-drift` is a read-only, deterministic CLI that:
+`proto-drift` is a read-only, deterministic CLI that maps every generated stub back to its
+`.proto` (from the source path protoc writes into the generated header, falling back to the
+filename convention) and reports three kinds of drift:
 
-1. **Scans** your repo for `.proto` files and generated stubs (`.pb.go`, `_pb2.py`, `_pb.js`, `_pb.d.ts`, etc.)
-2. **Hashes** the generated output from each proto
-3. **Compares** against what's committed in your SDK packages
-4. **Reports** which SDKs are out of date and which protos changed
+| Drift Type | Severity | Meaning |
+|------------|----------|---------|
+| `stale` | `CRITICAL` | The `.proto` is newer than the stub mapped to it — the stub was not regenerated. |
+| `missing_sdk` | `HIGH` | The `.proto` has no stub for a language the repo otherwise ships stubs for. |
+| `orphan` | `MEDIUM` | A stub's source `.proto` no longer exists in the repo. |
 
-Zero dependencies. No network calls. CI-ready.
+Read-only (it only stats and reads files), deterministic (no network, no clock, no randomness),
+zero runtime dependencies (standard library only), Python 3.11+.
 
 ## Installation
 
@@ -27,40 +34,106 @@ Zero dependencies. No network calls. CI-ready.
 pip install git+https://github.com/yunaremaia/proto-drift.git
 ```
 
-## Quick Start
+## Usage
 
 ```bash
-# Scan current directory for proto drift
+# Scan the current directory
 proto-drift scan
 
-# Output as JSON for CI
+# Scan a specific root
+proto-drift scan path/to/repo
+
+# Machine-readable output for CI
 proto-drift scan --json
 
-# Compare specific proto against specific SDK
-proto-drift check --proto api/v1/user.proto --sdk packages/ts-sdk
-
-# Exit non-zero on drift (for CI gating)
+# Exit 1 when drift is found
 proto-drift scan --fail-on-drift
+
+# Check one .proto against one SDK directory
+proto-drift check --proto api/v1/user.proto --sdk packages/ts-sdk
 ```
 
-## What It Detects
+`scan --json` emits:
 
-| Drift Type | Severity | Example |
-|------------|----------|---------|
-| Stale stubs | `CRITICAL` | `.proto` modified, `.pb.go` not regenerated |
-| Missing SDK | `HIGH` | Proto exists, no generated code for Python |
-| Orphan stubs | `MEDIUM` | Generated code exists, proto removed |
-| Version mismatch | `LOW` | SDK version claims `v1.2.3` but protos are `v1.3.0` |
+```json
+{
+  "tool": "proto-drift",
+  "version": "0.1.0",
+  "root": "/repo",
+  "drift_count": 1,
+  "findings": [
+    {
+      "type": "stale",
+      "severity": "CRITICAL",
+      "language": "go",
+      "proto": "api/v1/user.proto",
+      "stub": "sdk/go/user.pb.go",
+      "detail": ".proto modified after stub (mapped by header)"
+    }
+  ]
+}
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | No drift (or drift found without `--fail-on-drift`). |
+| `1` | Drift found and at least one gated type was reported (only with `--fail-on-drift`). |
+| `2` | Usage error: a path in the arguments does not exist or has the wrong kind. |
 
 ## Supported Languages
 
-| Language | Generated Files | Detection Method |
-|----------|-----------------|------------------|
-| Go | `*.pb.go` | Hash comparison |
-| Python | `*_pb2.py`, `*_pb2_grpc.py` | Hash comparison |
-| TypeScript | `*_pb.js`, `*_pb.d.ts`, `*_pb.ts` | Hash comparison |
-| Rust | `*.rs` (from `tonic`/`prost`) | Hash comparison |
-| Java | `*.java` (from `protoc`) | Hash comparison |
+| Language | Generated files | Source-path detection |
+|----------|-----------------|-----------------------|
+| Go | `*.pb.go` | protoc header (`// source: api/v1/user.proto`), else filename convention |
+| Python | `*_pb2.py`, `*_pb2_grpc.py` | filename convention (no header emitted) |
+| TypeScript / JavaScript | `*_pb.js`, `*_pb.d.ts`, `*_pb.ts` | ts-proto header, else filename convention |
+| Rust | `*.rs` with prost's `@generated by prost-build` marker | filename convention (prost emits no source path) |
+
+Hand-written `.rs` files are ignored: a `.rs` file only counts as a stub when it carries
+prost's generation marker. `.git`, `node_modules`, `target`, `dist`, `build`, virtualenvs and
+`__pycache__` are never walked.
+
+### What each rule checks
+
+- **`stale`** — the `.proto` exists and its mtime is newer than the stub's mtime.
+- **`orphan`** — the stub's header names a `.proto` that is not in the repo, or (no header) its
+  stem matches no `.proto` in the repo. When a stem matches several `.proto` files the mapping
+  is ambiguous, so nothing is reported: no false positives.
+- **`missing_sdk`** — the repo contains at least one generated stub, and this `.proto` has no
+  stub for a language that is otherwise represented. A language that appears nowhere in the
+  repo is not an expectation, so it is never reported.
+
+## Configuration
+
+Optional. Without a config file the whole repository is scanned. Create `.proto-drift.toml` in
+the repo root to narrow it:
+
+```toml
+[protos]
+# Where the .proto files live. Default: the whole repo root.
+paths = ["api/proto", "proto"]
+
+[sdk.go]
+path = "sdk/go"
+
+[sdk.python]
+path = "sdk/python"
+
+[sdk.typescript]
+path = "sdk/ts"
+
+[sdk.rust]
+path = "sdk/rust/src"
+
+[fail]
+# Which drift types make --fail-on-drift exit 1. Default: true for each.
+# A disabled type is still reported, it just no longer gates CI.
+on_stale = true
+on_missing_sdk = true
+on_orphan = false
+```
 
 ## CI Integration
 
@@ -82,53 +155,41 @@ proto-drift:
     - proto-drift scan --fail-on-drift
 ```
 
-## Configuration
+## Known limits
 
-Create `.proto-drift.toml` in your repo root:
+- **`stale` is mtime-based, so it trusts file timestamps.** In a developer working tree that is
+  accurate. In CI, a fresh `git checkout` gives every file roughly the same mtime, so a stale
+  stub may not sort as stale. `missing_sdk` and `orphan` do not depend on timestamps and are
+  reliable everywhere. Content-hash or git-history comparison would need `protoc` output or a
+  commit baseline; neither is implemented yet.
+- A stub whose source path cannot be resolved *and* whose stem is ambiguous is skipped rather
+  than guessed at.
+- There is no version-mismatch detection: nothing in a generated stub records which proto
+  version it was built from, so that check would be a guess.
 
-```toml
-[protos]
-paths = ["api/proto", "proto"]
-include = ["**/*.proto"]
+## Why not just use `buf`?
 
-[sdk.go]
-path = "sdk/go"
-generated_pattern = "**/*.pb.go"
-
-[sdk.python]
-path = "sdk/python"
-generated_pattern = "**/*_pb2.py"
-
-[sdk.typescript]
-path = "sdk/ts"
-generated_pattern = "**/*_pb.js"
-
-[sdk.rust]
-path = "sdk/rust/src"
-generated_pattern = "**/proto/*.rs"
-
-[fail]
-on_stale = true
-on_missing_sdk = true
-on_orphan = false
-```
-
-## Why Not Just Use `buf`?
-
-`buf` is excellent for linting and breaking change detection. But it doesn't:
+`buf` is excellent for linting and breaking-change detection. It does not:
 
 - Compare committed stubs against regenerated output
 - Gate CI on whether SDKs are actually regenerated
-- Report cross-language drift in a single command
+- Report cross-language drift in one command
 
-`proto-drift` complements `buf` — use `buf` for linting, use `proto-drift` for CI gating.
+`proto-drift` complements `buf` — use `buf` to keep protos honest, use `proto-drift` to keep
+committed stubs honest.
+
+## Development
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/pytest -q
+```
 
 ## Roadmap
 
-- [ ] Support `grpc-web` generated stubs
-- [ ] FlatBuffers schema drift detection
-- [ ] Avro schema drift detection
-- [ ] WASM build for browser-based CI
+- [ ] Content-based staleness check that survives a fresh clone
+- [ ] `grpc-web` generated stubs
 - [ ] GitHub Action wrapper
 - [ ] Pre-commit hook integration
 
@@ -138,7 +199,7 @@ MIT
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and pull requests: https://github.com/yunaremaia/proto-drift/issues
 
 ---
 
