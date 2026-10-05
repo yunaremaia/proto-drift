@@ -1,16 +1,16 @@
-# proto-drift
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
 
-A CLI tool to detect drift between protobuf/gRPC definitions and generated SDK stubs.
-
-## Usage
-
-```bash
-proto-drift scan [--json] [--fail-on-drift]
-proto-drift check --proto <path> --sdk <path>
-proto-drift init   # creates .proto-drift.toml
-```
-
-## Exit Codes
-
-- `0`: No drift detected
-- `1`: Drift detected (or error)
+# Tooling
+.idea/
+.vscode/
+.DS_Store

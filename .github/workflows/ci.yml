@@ -1,0 +1,65 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      # Rule selection, target version and the linted path all come from
+      # pyproject.toml, so this command and a local `ruff check src/` enforce the
+      # identical gate. src/ only - never tests/.
+      - run: ruff check src/
+      # A second, narrower gate over tests/: F821 (undefined name) ONLY. An undefined
+      # name is a NameError the moment it runs - a defect, not a style opinion - so it
+      # is worth catching, but this gate can never pressure a change into weakening
+      # or deleting a test.
+      - run: ruff check --select=F821 --config 'include = ["tests/**/*.py"]' tests/
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        exclude:
+          - os: macos-latest
+            python-version: "3.14"
+          - os: windows-latest
+            python-version: "3.14"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      # The installed console script and the module entry point must both work:
+      # CI users install from git and run `proto-drift scan`.
+      - run: proto-drift --version
+      - run: python -m protodrift --help
+
+  self-check:
+    # proto-drift dogfooding: the repo has no .proto files, so a correct scan of its
+    # own tree is empty. This catches a scanner that invents findings on a clean tree.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - run: proto-drift scan --fail-on-drift
