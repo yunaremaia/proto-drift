@@ -152,7 +152,8 @@ def scan(root: Path, cfg: dict | None = None) -> list[Finding]:
     def rel(path: Path) -> str:
         return path.relative_to(tree.root).as_posix()
 
-    mappings = [m for m in (map_stub(tree, s) for s in tree.stubs) if m.proto is not None or not m.ambiguous]
+    all_mappings = [map_stub(tree, s) for s in tree.stubs]
+    mappings = [m for m in all_mappings if m.proto is not None or not m.ambiguous]
     findings: list[Finding] = []
 
     for m in mappings:
@@ -165,8 +166,12 @@ def scan(root: Path, cfg: dict | None = None) -> list[Finding]:
 
     if tree.stubs:
         covered = {(rel(m.proto), m.language) for m in mappings if m.proto is not None}
+        # A stub we refused to map proves its language IS shipped; it says nothing
+        # about which .proto it covers. Claiming that language missing would be a
+        # false positive, the same way an ambiguous stem is not reported as orphan.
+        undecidable = {m.language for m in all_mappings if m.proto is None and m.ambiguous}
         for proto in tree.proto_paths:
-            for language in sorted(tree.languages):
+            for language in sorted(tree.languages - undecidable):
                 if (rel(proto), language) not in covered:
                     findings.append(Finding("missing_sdk", SEVERITIES["missing_sdk"], language, rel(proto), "",
                                             f"no {language} stub in repo"))

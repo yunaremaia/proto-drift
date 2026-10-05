@@ -105,6 +105,28 @@ def test_ambiguous_stem_is_not_reported_as_orphan(tmp_path):
     assert "orphan" not in types(tmp_path)
 
 
+def test_ambiguous_stub_is_not_reported_as_missing_sdk(tmp_path):
+    # The python stub is on disk; its stem is ambiguous, so which .proto it belongs
+    # to cannot be decided -- python must not be claimed absent (#14).
+    write(tmp_path / "a/user.proto", 'syntax = "proto3";\n')
+    write(tmp_path / "b/user.proto", 'syntax = "proto3";\n')
+    write(tmp_path / "sdk/py/user_pb2.py", PY_STUB)
+    assert scan(tmp_path) == []
+
+
+def test_ambiguous_stub_does_not_mask_a_really_missing_language(tmp_path):
+    write(tmp_path / "a/user.proto", 'syntax = "proto3";\n', mtime=T)
+    write(tmp_path / "b/user.proto", 'syntax = "proto3";\n', mtime=T)
+    write(tmp_path / "api/v1/order.proto", 'syntax = "proto3";\n', mtime=T)
+    write(tmp_path / "sdk/py/user_pb2.py", PY_STUB, mtime=T + 60)  # ambiguous python
+    write(tmp_path / "sdk/go/user.pb.go",  # decidable go stub, for a/user.proto only
+          GO_STUB.replace("api/v1/user.proto", "a/user.proto"), mtime=T + 60)
+    assert [(f.language, f.proto) for f in scan(tmp_path)] == [
+        ("go", "api/v1/order.proto"),
+        ("go", "b/user.proto"),
+    ]
+
+
 # --- missing SDK ------------------------------------------------------------
 
 
