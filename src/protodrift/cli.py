@@ -8,7 +8,15 @@ import sys
 from pathlib import Path
 
 from protodrift import SEVERITIES, __version__
-from protodrift.scan import Finding, discover, language_of, load_config, map_stub, scan
+from protodrift.scan import (
+    Finding,
+    discover,
+    language_of,
+    load_config,
+    map_stub,
+    scan,
+    stub_stem,
+)
 
 _ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
@@ -75,6 +83,15 @@ def _gates(cfg: dict) -> dict[str, bool]:
     return {k: bool(fail.get(f"on_{k}", True)) for k in SEVERITIES}
 
 
+def _exit_code(findings: list[Finding], cfg: dict, fail_on_drift: bool) -> int:
+    """`--fail-on-drift` exits 1 when a *gated* type was reported. One place, so
+    scan and check can never disagree about what the `[fail]` config means."""
+    if not fail_on_drift:
+        return 0
+    gates = _gates(cfg)
+    return 1 if any(gates.get(f.type, True) for f in findings) else 0
+
+
 def _must_exist(target: Path, label: str, want_dir: bool, shown: str) -> str | None:
     """One place decides what a missing or wrong-kind path prints, so scan and check agree."""
     if not target.exists():
@@ -93,11 +110,7 @@ def _cmd_scan(args) -> int:
     cfg = load_config(root)
     findings = scan(root, cfg)
     print(json.dumps(_to_json(findings, root.resolve()), indent=2) if args.json else _render(findings, root.resolve()))
-    if args.fail_on_drift:
-        gates = _gates(cfg)
-        if any(gates.get(f.type, True) for f in findings):
-            return 1
-    return 0
+    return _exit_code(findings, cfg, args.fail_on_drift)
 
 
 def _cmd_check(args) -> int:
@@ -109,22 +122,30 @@ def _cmd_check(args) -> int:
         if problem:
             print(problem, file=sys.stderr)
             return 2
-    tree = discover(root, load_config(root))
+    cfg = load_config(root)
+    tree = discover(root, cfg)
     proto = proto.resolve()
     findings: list[Finding] = []
     mapped = 0
+    undecidable = False
     for stub in tree.stubs:
-        if sdk not in stub.parents or map_stub(tree, stub).proto != proto:
+        if sdk not in stub.parents:
+            continue
+        mapping = map_stub(tree, stub)
+        if mapping.proto != proto:
+            # An ambiguous stub whose stem could be this .proto proves a stub exists;
+            # refusing to guess must not be reported as "no generated stub" (#14).
+            undecidable |= mapping.ambiguous and stub_stem(stub.name) == proto.stem
             continue
         mapped += 1
         if proto.stat().st_mtime_ns > stub.stat().st_mtime_ns:
             findings.append(Finding("stale", SEVERITIES["stale"], language_of(stub) or "", proto.relative_to(root).as_posix(),
                                     stub.relative_to(root).as_posix(), "proto modified after stub"))
-    if not mapped:
+    if not mapped and not undecidable:
         findings.append(Finding("missing_sdk", SEVERITIES["missing_sdk"], "", proto.relative_to(root).as_posix(), "",
                                 f"no generated stub for this proto under {args.sdk}"))
     print(json.dumps(_to_json(findings, root), indent=2) if args.json else _render(findings, root))
-    return 1 if args.fail_on_drift and findings else 0
+    return _exit_code(findings, cfg, args.fail_on_drift)
 
 
 def main(argv: list[str] | None = None) -> int:

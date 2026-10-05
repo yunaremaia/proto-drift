@@ -71,6 +71,15 @@ def test_config_gates_can_disable_every_type(tmp_path, capsys):
     assert "CRITICAL" in capsys.readouterr().out  # still reported, just not gating
 
 
+def test_check_honours_fail_gates(tmp_path, capsys):
+    drift_tree(tmp_path)
+    write(tmp_path, ".proto-drift.toml",
+          "[fail]\non_stale = false\non_missing_sdk = false\non_orphan = false\n", T)
+    assert main(["check", "--proto", "api/v1/order.proto", "--sdk", "sdk/go",
+                 "--root", str(tmp_path), "--fail-on-drift"]) == 0
+    assert "CRITICAL" in capsys.readouterr().out  # still reported, just not gating
+
+
 def test_check_reports_drift_for_one_proto(tmp_path, capsys):
     drift_tree(tmp_path)
     assert main(["check", "--proto", "api/v1/order.proto", "--sdk", "sdk/go",
@@ -81,6 +90,17 @@ def test_check_reports_drift_for_one_proto(tmp_path, capsys):
 def test_check_clean_pair_is_quiet(tmp_path, capsys):
     drift_tree(tmp_path)
     assert main(["check", "--proto", "api/v1/user.proto", "--sdk", "sdk/go", "--root", str(tmp_path)]) == 0
+    assert "No proto drift detected" in capsys.readouterr().out
+
+
+def test_check_ambiguous_stub_is_not_missing_sdk(tmp_path, capsys):
+    # Both .proto files match user_pb2.py's stem, so the stub cannot be mapped --
+    # "no generated stub" would be false, the stub is right there (#14).
+    for rel in ("a/user.proto", "b/user.proto"):
+        write(tmp_path, rel, 'syntax = "proto3";\n')
+    write(tmp_path, "sdk/py/user_pb2.py", "# generated\n")
+    assert main(["check", "--proto", "a/user.proto", "--sdk", "sdk/py",
+                 "--root", str(tmp_path)]) == 0
     assert "No proto drift detected" in capsys.readouterr().out
 
 
