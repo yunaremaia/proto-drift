@@ -5,19 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Fixed
-
-- An ambiguous stub stem no longer produces a false HIGH `missing_sdk`. When a stub exists on
-  disk but its stem matches several `.proto` files, the mapping cannot be decided, so the
-  language is not claimed absent. This matches the existing rule for `orphan`, and applies to
-  both `scan` and `check`.
-- `check --fail-on-drift` now honours the `[fail]` config. Previously only `scan` consulted the
-  gates, so the same tree, config and flag produced opposite exit codes depending on the
-  subcommand. Both now go through one `_exit_code` helper.
-
-## [0.1.0] - 2026-10-05
+## [0.1.0] - 2026-10-07
 
 ### Added
 
